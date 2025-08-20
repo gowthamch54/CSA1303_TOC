@@ -1,0 +1,342 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CFG Parser and Syntax Tree Generator</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+        }
+        .gradient-bg {
+            background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
+        }
+    </style>
+</head>
+<body class="gradient-bg min-h-screen flex items-center justify-center p-4">
+    <div class="w-full max-w-6xl mx-auto bg-white rounded-2xl shadow-2xl p-6 md:p-8">
+        <header class="text-center mb-6">
+            <h1 class="text-3xl md:text-4xl font-bold text-gray-800">CFG Parser & Syntax Tree Generator</h1>
+            <p class="text-gray-500 mt-2">A tool to parse strings with a context-free grammar and visualize the syntax tree.</p>
+        </header>
+
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-8">
+            <!-- Input and Controls Column -->
+            <div class="flex flex-col space-y-6">
+                <div>
+                    <label for="grammar-input" class="block text-lg font-semibold text-gray-700 mb-2">1. Define Grammar (CFG Rules)</label>
+                    <textarea id="grammar-input" rows="8" class="w-full p-3 border border-gray-300 rounded-lg shadow-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-shadow" placeholder="Enter grammar rules, one per line. e.g., E -> E + T | T">E -> T E_prime
+E_prime -> + T E_prime | epsilon
+T -> F T_prime
+T_prime -> * F T_prime | epsilon
+F -> ( E ) | id</textarea>
+                </div>
+
+                <div>
+                    <label for="string-input" class="block text-lg font-semibold text-gray-700 mb-2">2. Input String</label>
+                    <input type="text" id="string-input" class="w-full p-3 border border-gray-300 rounded-lg shadow-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-shadow" value="id * id + id">
+                </div>
+
+                <button id="parse-btn" class="w-full bg-blue-600 text-white font-bold py-3 px-4 rounded-lg hover:bg-blue-700 focus:outline-none focus:ring-4 focus:ring-blue-300 transform hover:scale-105 transition-all shadow-lg">
+                    Parse and Generate Tree
+                </button>
+
+                <div>
+                    <h3 class="text-lg font-semibold text-gray-700 mb-2">3. Results</h3>
+                    <div id="result-message" class="p-4 rounded-lg bg-gray-100 min-h-[50px] text-gray-700 font-mono text-sm shadow-inner"></div>
+                </div>
+                 <div>
+                    <h3 class="text-lg font-semibold text-gray-700 mb-2">4. Derivation Steps</h3>
+                    <div id="derivation-steps" class="p-4 rounded-lg bg-gray-100 min-h-[100px] text-gray-700 font-mono text-sm shadow-inner overflow-auto max-h-48"></div>
+                </div>
+            </div>
+
+            <!-- Syntax Tree Visualization Column -->
+            <div class="flex flex-col">
+                <h3 class="text-lg font-semibold text-gray-700 mb-2 text-center">Syntax Tree</h3>
+                <div class="border-2 border-dashed border-gray-300 rounded-lg bg-gray-50 flex-grow min-h-[400px] lg:min-h-0 flex items-center justify-center">
+                    <canvas id="tree-canvas"></canvas>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // --- DOM Elements ---
+        const grammarInput = document.getElementById('grammar-input');
+        const stringInput = document.getElementById('string-input');
+        const parseBtn = document.getElementById('parse-btn');
+        const resultMessage = document.getElementById('result-message');
+        const derivationStepsDiv = document.getElementById('derivation-steps');
+        const canvas = document.getElementById('tree-canvas');
+        const ctx = canvas.getContext('2d');
+
+        // --- Global Parser State ---
+        let tokens = [];
+        let currentTokenIndex = 0;
+        let grammar = {};
+        let derivationSteps = [];
+
+        // --- Core Parsing Logic ---
+
+        /**
+         * Parses the grammar rules from the textarea into a structured object.
+         * This version is more robust and handles rules where spaces might be omitted
+         * between symbols (e.g., "bAA" vs "b A A").
+         */
+        function parseGrammar(grammarText) {
+            const rules = {};
+            const lines = grammarText.trim().split('\n').filter(line => line.includes('->'));
+            
+            // First, get all non-terminal symbols from the left-hand side of the rules.
+            const nonTerminals = lines.map(line => line.split('->')[0].trim());
+
+            lines.forEach(line => {
+                const [nonTerminal, productions] = line.split('->').map(s => s.trim());
+                if (!productions) return;
+
+                const productionList = productions.split('|').map(p_str => {
+                    let p = p_str.trim();
+                    
+                    // If the production part already has spaces, trust the user's spacing.
+                    // Otherwise, try to intelligently split it by identifying non-terminals.
+                    if (!p.includes(' ')) {
+                        // Create a regex to find all known non-terminals in the string.
+                        // This helps separate 'bAA' into 'b', 'A', 'A' but keeps 'id' as one token.
+                        const ntRegex = new RegExp(nonTerminals.join('|'), 'g');
+                        if (p.match(ntRegex)) {
+                           p = p.replace(ntRegex, ' $& '); // Add spaces around non-terminals
+                        }
+                    }
+                    return p.trim().split(/\s+/).filter(s => s); // Split by space and remove empty strings
+                });
+                rules[nonTerminal] = productionList;
+            });
+            return rules;
+        }
+
+        /**
+         * The main parse function that initiates the process.
+         * It's a recursive descent parser starting from the grammar's start symbol.
+         */
+        function parse(startSymbol) {
+            currentTokenIndex = 0;
+            derivationSteps = [];
+            try {
+                const tree = parseNonTerminal(startSymbol);
+                // After a successful parse, check if all tokens were consumed.
+                if (currentTokenIndex < tokens.length) {
+                    throw new Error(`Unexpected token '${tokens[currentTokenIndex]}' at end of input.`);
+                }
+                return tree; // Success
+            } catch (error) {
+                console.error(error);
+                throw error; // Propagate error to be caught by the event listener
+            }
+        }
+
+        /**
+         * The core recursive function for parsing a non-terminal.
+         * It tries each production rule for the given non-terminal.
+         */
+        function parseNonTerminal(nonTerminal) {
+            if (!grammar[nonTerminal]) {
+                throw new Error(`Grammar rule not found for non-terminal: ${nonTerminal}`);
+            }
+
+            const initialTokenIndex = currentTokenIndex;
+            const productions = grammar[nonTerminal];
+
+            for (const production of productions) {
+                const children = [];
+                derivationSteps.push(`Attempting ${nonTerminal} -> ${production.join(' ')}`);
+
+                try {
+                    for (const symbol of production) {
+                        if (symbol === 'epsilon') {
+                            children.push({ name: 'ε' });
+                            continue;
+                        }
+
+                        // If the symbol is a non-terminal, recurse
+                        if (grammar[symbol]) {
+                            const childNode = parseNonTerminal(symbol);
+                            if (!childNode) {
+                                // This sub-parse failed, so this production path is invalid.
+                                // Throw an error to trigger the catch block for backtracking.
+                                throw new Error(`Sub-parse failed for non-terminal '${symbol}'`);
+                            }
+                            children.push(childNode);
+                        } 
+                        // Otherwise, it's a terminal, so match it with the current token
+                        else {
+                            if (currentTokenIndex < tokens.length && tokens[currentTokenIndex] === symbol) {
+                                children.push({ name: tokens[currentTokenIndex], isTerminal: true });
+                                currentTokenIndex++;
+                            } else {
+                                throw new Error(`Expected terminal '${symbol}', but got '${tokens[currentTokenIndex] || 'end of input'}'`);
+                            }
+                        }
+                    }
+                    // If we successfully parsed this production, return the tree node.
+                    derivationSteps.push(`Success: ${nonTerminal} -> ${production.join(' ')}`);
+                    return { name: nonTerminal, children: children };
+                } catch (e) {
+                    // If a production fails, backtrack and try the next one.
+                    currentTokenIndex = initialTokenIndex;
+                }
+            }
+
+            // If no productions for this non-terminal succeeded, return null to indicate failure.
+            // The calling function will then throw an error to be caught.
+            return null;
+        }
+
+        // --- Tree Visualization Logic ---
+
+        const NODE_RADIUS = 25;
+        const HORIZONTAL_SPACING = 60;
+        const VERTICAL_SPACING = 80;
+
+        /**
+         * Clears and resizes the canvas, then initiates the drawing process.
+         */
+        function drawTree(tree) {
+            if (!tree) return;
+            const treeWidth = calculateTreeWidth(tree) * HORIZONTAL_SPACING;
+            const treeHeight = calculateTreeHeight(tree) * VERTICAL_SPACING;
+
+            canvas.width = Math.max(treeWidth + 2 * NODE_RADIUS, 300);
+            canvas.height = Math.max(treeHeight + 2 * NODE_RADIUS, 400);
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            const startX = canvas.width / 2;
+            const startY = NODE_RADIUS + 20;
+            
+            drawNode(tree, startX, startY);
+        }
+
+        /**
+         * Recursively draws a node and its children.
+         */
+        function drawNode(node, x, y) {
+            // Draw lines to children first (so they appear underneath the nodes)
+            if (node.children && node.children.length > 0) {
+                const totalWidth = calculateTreeWidth(node) * HORIZONTAL_SPACING;
+                let currentXOffset = 0;
+                if (node.children.length > 0) {
+                     // Start drawing from the left edge of the total child width
+                     currentXOffset = x - totalWidth / 2;
+                }
+               
+                node.children.forEach(child => {
+                    const childWidth = calculateTreeWidth(child) * HORIZONTAL_SPACING;
+                    const childX = currentXOffset + childWidth / 2;
+                    const childY = y + VERTICAL_SPACING;
+                    
+                    ctx.beginPath();
+                    ctx.moveTo(x, y + NODE_RADIUS);
+                    ctx.lineTo(childX, childY - NODE_RADIUS);
+                    ctx.strokeStyle = '#94a3b8';
+                    ctx.lineWidth = 2;
+                    ctx.stroke();
+                    
+                    drawNode(child, childX, childY);
+                    currentXOffset += childWidth;
+                });
+            }
+
+            // Draw the node circle and text
+            ctx.beginPath();
+            ctx.arc(x, y, NODE_RADIUS, 0, 2 * Math.PI);
+            ctx.fillStyle = node.isTerminal ? '#dbeafe' : '#ffffff';
+            ctx.fill();
+            ctx.strokeStyle = node.isTerminal ? '#60a5fa' : '#3b82f6';
+            ctx.lineWidth = 2;
+            ctx.stroke();
+
+            ctx.fillStyle = '#1e293b';
+            ctx.font = '16px Inter';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(node.name, x, y);
+        }
+
+        /**
+         * Calculates the horizontal space needed for a subtree.
+         */
+        function calculateTreeWidth(node) {
+            if (!node || !node.children || node.children.length === 0) {
+                return 1;
+            }
+            return node.children.reduce((sum, child) => sum + calculateTreeWidth(child), 0);
+        }
+
+        /**
+         * Calculates the vertical depth of a subtree.
+         */
+        function calculateTreeHeight(node) {
+            if (!node || !node.children || node.children.length === 0) {
+                return 1;
+            }
+            return 1 + Math.max(...node.children.map(calculateTreeHeight));
+        }
+        
+        function updateDerivationSteps() {
+            derivationStepsDiv.innerHTML = derivationSteps.map(step => `<div>${step.replace(/</g, "&lt;").replace(/>/g, "&gt;")}</div>`).join('');
+        }
+
+
+        // --- Event Listener ---
+        parseBtn.addEventListener('click', () => {
+            try {
+                // 1. Get and parse the grammar
+                const grammarText = grammarInput.value;
+                if (!grammarText) throw new Error("Grammar definition cannot be empty.");
+                grammar = parseGrammar(grammarText);
+
+                // 2. Tokenize the input string
+                const inputStr = stringInput.value.trim();
+                if (!inputStr) throw new Error("Input string cannot be empty.");
+                
+                // This heuristic handles both "a+b" and "id + id" style inputs.
+                if (inputStr.includes(' ')) {
+                    tokens = inputStr.split(' ').filter(t => t);
+                } else {
+                    tokens = inputStr.split('').filter(t => t);
+                }
+
+
+                // 3. Start parsing from the first rule's non-terminal
+                const startSymbol = Object.keys(grammar)[0];
+                if (!startSymbol) throw new Error("No start symbol found in grammar.");
+                
+                const syntaxTree = parse(startSymbol);
+
+                // 4. If parsing is successful, display success and draw tree
+                if(syntaxTree) {
+                    resultMessage.textContent = 'Success: The string was parsed successfully!';
+                    resultMessage.className = 'p-4 rounded-lg bg-green-100 text-green-800 font-mono text-sm shadow-inner';
+                    drawTree(syntaxTree);
+                } else {
+                    // This case handles when parse returns null without throwing an error (e.g. general failure)
+                    throw new Error(`Failed to parse non-terminal '${startSymbol}' at token '${tokens[currentTokenIndex] || 'end of input'}'`);
+                }
+                updateDerivationSteps();
+
+            } catch (error) {
+                // 5. If parsing fails, show an error message
+                resultMessage.textContent = `Error: ${error.message}`;
+                resultMessage.className = 'p-4 rounded-lg bg-red-100 text-red-800 font-mono text-sm shadow-inner';
+                ctx.clearRect(0, 0, canvas.width, canvas.height); // Clear the canvas on error
+                updateDerivationSteps();
+            }
+        });
+
+        // Initial parse on load
+        parseBtn.click();
+    </script>
+</body>
+</html>

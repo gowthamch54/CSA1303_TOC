@@ -1,0 +1,57 @@
+//capstone
+1.
+
+S->aB | bA
+A-> a | as |bAA
+B-> b | bs | aBB
+
+aababb
+
+2.
+
+S -> ( S ) S | epsilon
+
+()(())
+
+
+3. 
+
+P -> a P a | b P b | a | b | epsilon
+
+ababa
+
+4.
+
+S -> a S b | epsilon
+
+aaabbb
+
+5.
+
+D -> type id L
+L -> , id L | ;
+
+type id , id , id ;
+
+6.
+
+S -> if C then S else S | if C then S | assign
+
+if C then if C then assign else assign
+
+7.
+
+S -> a S a | b S b | c
+
+ab c ba
+
+8.
+
+S -> a S b S | b S a S | epsilon
+
+ab ab
+
+
+
+
+
